@@ -17,7 +17,7 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { db } from "@/lib/firebase";
-import { doc, updateDoc, getDoc } from "firebase/firestore";
+import { doc, updateDoc, getDoc, setDoc } from "firebase/firestore";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
 
@@ -55,7 +55,7 @@ interface QuestionSectionProps {
   generatingQuestionId?: string;
   analyzingQuestionId?: string;
   hideFilters?: boolean;
-  sessionId?: string; // Add sessionId prop
+  sessionId: string; // Make sessionId required
 }
 
 // Utility functions
@@ -383,80 +383,126 @@ export function QuestionSection({
     setUserAnswers(initialAnswers);
   }, [questions]);
 
-  // Save user answer to Firebase
+  // Save user answer to Firebase with proper error handling
   const saveAnswerToFirebase = async (questionId: string, answer: string) => {
-    if (!currentUser || !sessionId) return;
+    if (!currentUser || !sessionId) {
+      console.error("Missing user or session ID for saving answer");
+      return;
+    }
 
     try {
       const sessionRef = doc(db, "sessions", sessionId);
       const sessionDoc = await getDoc(sessionRef);
       
-      if (sessionDoc.exists()) {
-        const sessionData = sessionDoc.data();
-        const updatedQuestions = sessionData.questions.map((q: Question) =>
-          q.id === questionId ? { ...q, userAnswer: answer } : q
-        );
-
-        await updateDoc(sessionRef, {
-          questions: updatedQuestions,
-          lastUpdated: new Date(),
-        });
+      if (!sessionDoc.exists()) {
+        console.error("Session document does not exist:", sessionId);
+        return;
       }
+
+      const sessionData = sessionDoc.data();
+      const updatedQuestions = sessionData.questions.map((q: Question) =>
+        q.id === questionId ? { ...q, userAnswer: answer } : q
+      );
+
+      // Calculate progress
+      const answeredCount = updatedQuestions.filter((q: Question) => q.userAnswer?.trim()).length;
+      const progressPercentage = Math.round((answeredCount / updatedQuestions.length) * 100);
+
+      await updateDoc(sessionRef, {
+        questions: updatedQuestions,
+        progress: progressPercentage,
+        answeredCount,
+        lastUpdated: new Date(),
+      });
+
+      console.log(`Saved answer for question ${questionId} in session ${sessionId}`);
     } catch (error) {
       console.error("Error saving answer to Firebase:", error);
+      toast({
+        title: "Save Error",
+        description: "Failed to save your answer. Please try again.",
+        variant: "destructive",
+      });
     }
   };
 
-  // Save feedback to Firebase
+  // Save feedback to Firebase with proper error handling
   const saveFeedbackToFirebase = async (questionId: string, feedback: any) => {
-    if (!currentUser || !sessionId) return;
+    if (!currentUser || !sessionId) {
+      console.error("Missing user or session ID for saving feedback");
+      return;
+    }
 
     try {
       const sessionRef = doc(db, "sessions", sessionId);
       const sessionDoc = await getDoc(sessionRef);
       
-      if (sessionDoc.exists()) {
-        const sessionData = sessionDoc.data();
-        const updatedQuestions = sessionData.questions.map((q: Question) =>
-          q.id === questionId ? { ...q, feedback } : q
-        );
-
-        // Calculate progress
-        const answeredCount = updatedQuestions.filter((q: Question) => q.userAnswer).length;
-        const progress = Math.round((answeredCount / updatedQuestions.length) * 100);
-
-        await updateDoc(sessionRef, {
-          questions: updatedQuestions,
-          progress,
-          lastUpdated: new Date(),
-        });
+      if (!sessionDoc.exists()) {
+        console.error("Session document does not exist:", sessionId);
+        return;
       }
+
+      const sessionData = sessionDoc.data();
+      const updatedQuestions = sessionData.questions.map((q: Question) =>
+        q.id === questionId ? { ...q, feedback } : q
+      );
+
+      // Calculate progress
+      const answeredCount = updatedQuestions.filter((q: Question) => q.userAnswer?.trim()).length;
+      const progressPercentage = Math.round((answeredCount / updatedQuestions.length) * 100);
+
+      await updateDoc(sessionRef, {
+        questions: updatedQuestions,
+        progress: progressPercentage,
+        answeredCount,
+        lastUpdated: new Date(),
+      });
+
+      console.log(`Saved feedback for question ${questionId} in session ${sessionId}`);
     } catch (error) {
       console.error("Error saving feedback to Firebase:", error);
+      toast({
+        title: "Save Error",
+        description: "Failed to save feedback. Please try again.",
+        variant: "destructive",
+      });
     }
   };
 
-  // Save suggested answer to Firebase
+  // Save suggested answer to Firebase with proper error handling
   const saveSuggestedAnswerToFirebase = async (questionId: string, suggestedAnswer: string) => {
-    if (!currentUser || !sessionId) return;
+    if (!currentUser || !sessionId) {
+      console.error("Missing user or session ID for saving suggested answer");
+      return;
+    }
 
     try {
       const sessionRef = doc(db, "sessions", sessionId);
       const sessionDoc = await getDoc(sessionRef);
       
-      if (sessionDoc.exists()) {
-        const sessionData = sessionDoc.data();
-        const updatedQuestions = sessionData.questions.map((q: Question) =>
-          q.id === questionId ? { ...q, suggestedAnswer } : q
-        );
-
-        await updateDoc(sessionRef, {
-          questions: updatedQuestions,
-          lastUpdated: new Date(),
-        });
+      if (!sessionDoc.exists()) {
+        console.error("Session document does not exist:", sessionId);
+        return;
       }
+
+      const sessionData = sessionDoc.data();
+      const updatedQuestions = sessionData.questions.map((q: Question) =>
+        q.id === questionId ? { ...q, suggestedAnswer } : q
+      );
+
+      await updateDoc(sessionRef, {
+        questions: updatedQuestions,
+        lastUpdated: new Date(),
+      });
+
+      console.log(`Saved suggested answer for question ${questionId} in session ${sessionId}`);
     } catch (error) {
       console.error("Error saving suggested answer to Firebase:", error);
+      toast({
+        title: "Save Error",
+        description: "Failed to save suggested answer. Please try again.",
+        variant: "destructive",
+      });
     }
   };
 
@@ -543,13 +589,25 @@ export function QuestionSection({
   const handleAnswerChange = async (questionId: string, answer: string) => {
     setUserAnswers((prev) => ({ ...prev, [questionId]: answer }));
     
-    // Save to Firebase immediately when user types
-    if (answer.trim()) {
+    // Debounced save to Firebase to avoid too many writes
+    const timeoutId = setTimeout(async () => {
       await saveAnswerToFirebase(questionId, answer);
-    }
+    }, 1000); // Save after 1 second of no typing
+
+    // Clear previous timeout
+    return () => clearTimeout(timeoutId);
   };
 
   const handleAnswerSubmit = async (questionId: string, answer: string) => {
+    if (!answer.trim()) {
+      toast({
+        title: "Empty Answer",
+        description: "Please provide an answer before submitting.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     try {
       // Clear any previous error for this question
       setAnalysisErrors((prev) => {
@@ -557,6 +615,9 @@ export function QuestionSection({
         delete newErrors[questionId];
         return newErrors;
       });
+
+      // Save user answer first
+      await saveAnswerToFirebase(questionId, answer);
 
       // Call the parent's onAnswerSubmit which will handle the AI analysis
       await onAnswerSubmit(questionId, answer);
@@ -597,6 +658,13 @@ export function QuestionSection({
 
   const handleGenerateAnswer = async (questionId: string) => {
     try {
+      // Clear any previous error
+      setAnalysisErrors((prev) => {
+        const newErrors = { ...prev };
+        delete newErrors[questionId];
+        return newErrors;
+      });
+
       await onGenerateAnswer(questionId);
     } catch (error) {
       console.error("Error generating answer:", error);

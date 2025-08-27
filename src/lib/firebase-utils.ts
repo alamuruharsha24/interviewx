@@ -7,7 +7,9 @@ import {
   query, 
   where, 
   getDocs,
-  orderBy 
+  orderBy,
+  setDoc,
+  serverTimestamp
 } from "firebase/firestore";
 
 export interface SessionProgress {
@@ -39,6 +41,10 @@ export async function updateQuestionInSession(
   questionId: string,
   updates: Partial<QuestionData>
 ): Promise<void> {
+  if (!sessionId || !questionId) {
+    throw new Error("Session ID and Question ID are required");
+  }
+
   try {
     const sessionRef = doc(db, "sessions", sessionId);
     const sessionDoc = await getDoc(sessionRef);
@@ -48,19 +54,26 @@ export async function updateQuestionInSession(
     }
 
     const sessionData = sessionDoc.data();
+    if (!sessionData.questions || !Array.isArray(sessionData.questions)) {
+      throw new Error("Invalid session data structure");
+    }
+
     const updatedQuestions = sessionData.questions.map((q: QuestionData) =>
       q.id === questionId ? { ...q, ...updates } : q
     );
 
     // Calculate progress
-    const answeredCount = updatedQuestions.filter((q: QuestionData) => q.userAnswer).length;
+    const answeredCount = updatedQuestions.filter((q: QuestionData) => q.userAnswer?.trim()).length;
     const progress = Math.round((answeredCount / updatedQuestions.length) * 100);
 
     await updateDoc(sessionRef, {
       questions: updatedQuestions,
       progress,
-      lastUpdated: new Date(),
+      answeredCount,
+      lastUpdated: serverTimestamp(),
     });
+
+    console.log(`Successfully updated question ${questionId} in session ${sessionId}`);
   } catch (error) {
     console.error("Error updating question in session:", error);
     throw error;
@@ -95,6 +108,11 @@ export async function getSessionProgress(sessionId: string): Promise<SessionProg
 
 // Get all sessions for a user with progress
 export async function getUserSessionsWithProgress(userId: string) {
+  if (!userId) {
+    console.error("User ID is required");
+    return [];
+  }
+
   try {
     const q = query(
       collection(db, "sessions"),
@@ -108,7 +126,7 @@ export async function getUserSessionsWithProgress(userId: string) {
     querySnapshot.forEach((doc) => {
       const data = doc.data();
       const questions = data.questions || [];
-      const answeredCount = questions.filter((q: QuestionData) => q.userAnswer).length;
+      const answeredCount = questions.filter((q: QuestionData) => q.userAnswer?.trim()).length;
       const progress = questions.length > 0 ? Math.round((answeredCount / questions.length) * 100) : 0;
 
       sessions.push({
@@ -116,9 +134,11 @@ export async function getUserSessionsWithProgress(userId: string) {
         ...data,
         progress,
         answeredCount,
+        totalQuestions: questions.length,
       });
     });
 
+    console.log(`Retrieved ${sessions.length} sessions for user ${userId}`);
     return sessions;
   } catch (error) {
     console.error("Error getting user sessions:", error);
@@ -132,8 +152,15 @@ export async function saveUserAnswer(
   questionId: string,
   answer: string
 ): Promise<void> {
+  if (!sessionId || !questionId) {
+    throw new Error("Session ID and Question ID are required");
+  }
+
   try {
-    await updateQuestionInSession(sessionId, questionId, { userAnswer: answer });
+    await updateQuestionInSession(sessionId, questionId, { 
+      userAnswer: answer,
+      answeredAt: serverTimestamp()
+    });
   } catch (error) {
     console.error("Error saving user answer:", error);
     throw error;
@@ -146,8 +173,15 @@ export async function saveFeedback(
   questionId: string,
   feedback: any
 ): Promise<void> {
+  if (!sessionId || !questionId) {
+    throw new Error("Session ID and Question ID are required");
+  }
+
   try {
-    await updateQuestionInSession(sessionId, questionId, { feedback });
+    await updateQuestionInSession(sessionId, questionId, { 
+      feedback,
+      analyzedAt: serverTimestamp()
+    });
   } catch (error) {
     console.error("Error saving feedback:", error);
     throw error;
@@ -160,8 +194,15 @@ export async function saveSuggestedAnswer(
   questionId: string,
   suggestedAnswer: string
 ): Promise<void> {
+  if (!sessionId || !questionId) {
+    throw new Error("Session ID and Question ID are required");
+  }
+
   try {
-    await updateQuestionInSession(sessionId, questionId, { suggestedAnswer });
+    await updateQuestionInSession(sessionId, questionId, { 
+      suggestedAnswer,
+      generatedAt: serverTimestamp()
+    });
   } catch (error) {
     console.error("Error saving suggested answer:", error);
     throw error;
@@ -170,11 +211,17 @@ export async function saveSuggestedAnswer(
 
 // Get detailed session analytics
 export async function getSessionAnalytics(sessionId: string) {
+  if (!sessionId) {
+    console.error("Session ID is required");
+    return null;
+  }
+
   try {
     const sessionRef = doc(db, "sessions", sessionId);
     const sessionDoc = await getDoc(sessionRef);
     
     if (!sessionDoc.exists()) {
+      console.error("Session not found:", sessionId);
       return null;
     }
 
@@ -183,7 +230,7 @@ export async function getSessionAnalytics(sessionId: string) {
     
     const analytics = {
       totalQuestions: questions.length,
-      answeredQuestions: questions.filter((q: QuestionData) => q.userAnswer).length,
+      answeredQuestions: questions.filter((q: QuestionData) => q.userAnswer?.trim()).length,
       questionsWithFeedback: questions.filter((q: QuestionData) => q.feedback).length,
       averageScore: 0,
       technicalQuestions: questions.filter((q: QuestionData) => q.type === "technical").length,
@@ -191,6 +238,10 @@ export async function getSessionAnalytics(sessionId: string) {
       easyQuestions: questions.filter((q: QuestionData) => q.difficulty === "Easy").length,
       mediumQuestions: questions.filter((q: QuestionData) => q.difficulty === "Medium").length,
       hardQuestions: questions.filter((q: QuestionData) => q.difficulty === "Hard").length,
+      sessionId,
+      userId: sessionData.userId,
+      createdAt: sessionData.createdAt,
+      lastUpdated: sessionData.lastUpdated,
     };
 
     // Calculate average score
@@ -206,5 +257,74 @@ export async function getSessionAnalytics(sessionId: string) {
   } catch (error) {
     console.error("Error getting session analytics:", error);
     return null;
+  }
+}
+// Create a new session with proper structure
+export async function createInterviewSession(
+  userId: string,
+  sessionData: {
+    jobTitle: string;
+    company: string;
+    companyType: string;
+    jobDescription?: string;
+    requirements?: string;
+    resume?: string;
+    questions: any[];
+    codingQuestions: any[];
+  }
+) {
+  if (!userId) {
+    throw new Error("User ID is required");
+  }
+
+  try {
+    const sessionDoc = {
+      userId,
+      ...sessionData,
+      questionCount: sessionData.questions.length,
+      codingCount: sessionData.codingQuestions.length,
+      progress: 0,
+      answeredCount: 0,
+      createdAt: serverTimestamp(),
+      lastUpdated: serverTimestamp(),
+    };
+
+    const docRef = await addDoc(collection(db, "sessions"), sessionDoc);
+    console.log(`Created new session ${docRef.id} for user ${userId}`);
+    return docRef;
+  } catch (error) {
+    console.error("Error creating session:", error);
+    throw error;
+  }
+}
+
+// Get a specific session by ID with user validation
+export async function getSessionById(sessionId: string, userId: string) {
+  if (!sessionId || !userId) {
+    throw new Error("Session ID and User ID are required");
+  }
+
+  try {
+    const sessionRef = doc(db, "sessions", sessionId);
+    const sessionDoc = await getDoc(sessionRef);
+    
+    if (!sessionDoc.exists()) {
+      throw new Error("Session not found");
+    }
+
+    const sessionData = sessionDoc.data();
+    
+    // Verify user owns this session
+    if (sessionData.userId !== userId) {
+      throw new Error("Access denied - session belongs to different user");
+    }
+
+    return {
+      id: sessionDoc.id,
+      ...sessionData,
+    };
+  } catch (error) {
+    console.error("Error getting session:", error);
+    throw error;
   }
 }

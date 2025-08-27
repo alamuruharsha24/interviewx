@@ -32,6 +32,7 @@ import {
 } from "@/lib/openRouter";
 import { db } from "@/lib/firebase";
 import { collection, addDoc, serverTimestamp } from "firebase/firestore";
+import { createInterviewSession } from "@/lib/firebase-utils";
 import * as pdfjsLib from "pdfjs-dist";
 
 // Configure PDF.js worker
@@ -357,7 +358,6 @@ export function PreparationSetup() {
       setLoadingProgress(70);
 
       const sessionData = {
-        userId: currentUser.uid,
         jobTitle: formData.jobTitle,
         company: formData.company,
         companyType: formData.companyType,
@@ -369,15 +369,9 @@ export function PreparationSetup() {
           id: `question-${index}`,
         })),
         codingQuestions,
-        questionCount: questions.length,
-        codingCount: codingQuestions.length,
-        progress: 0,
-        answeredCount: 0,
-        createdAt: serverTimestamp(),
-        lastUpdated: serverTimestamp(),
       };
 
-      const docRef = await addDoc(collection(db, "sessions"), sessionData);
+      const docRef = await createInterviewSession(currentUser.uid, sessionData);
       setLoadingProgress(100);
 
       // Final delay to show completion

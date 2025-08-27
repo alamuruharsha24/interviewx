@@ -22,7 +22,8 @@ import { CodingSection } from "./CodingSection";
 import { 
   updateQuestionInSession, 
   saveFeedback, 
-  saveSuggestedAnswer 
+  saveSuggestedAnswer,
+  saveUserAnswer
 } from "@/lib/firebase-utils";
 
 interface SessionData {
@@ -118,8 +119,9 @@ export function SessionView() {
       const question = sessionData.questions.find((q) => q.id === questionId);
       if (!question) return;
 
-      // Save user answer first
-      await updateQuestionInSession(sessionId!, questionId, { userAnswer: answer });
+      // Save user answer first with proper error handling
+      await saveUserAnswer(sessionId!, questionId, answer);
+      
       const feedback = await analyzeAnswer(
         question.question,
         answer,
