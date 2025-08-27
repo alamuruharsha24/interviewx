@@ -15,47 +15,11 @@ import {
   Copy,
   Check,
   RefreshCw,
-  BarChart3,
-  Plus,
-  LogOut,
 } from "lucide-react";
-import { initializeApp } from "firebase/app";
-import {
-  getFirestore,
-  doc,
-  setDoc,
-  collection,
-  query,
-  getDocs,
-  updateDoc,
-  addDoc,
-  serverTimestamp,
-  where,
-  orderBy,
-} from "firebase/firestore";
-import {
-  getAuth,
-  signInWithPopup,
-  GoogleAuthProvider,
-  signOut,
-  onAuthStateChanged,
-} from "firebase/auth";
-
-// Firebase configuration
-const firebaseConfig = {
-  apiKey: "AIzaSyBIFamaMJOk4UjWBPTMVXM5sXKJRCF9wJs",
-  authDomain: "interview-preparation-ap-aa6d6.firebaseapp.com",
-  projectId: "interview-preparation-ap-aa6d6",
-  storageBucket: "interview-preparation-ap-aa6d6.appspot.com",
-  messagingSenderId: "630863414235",
-  appId: "1:630863414235:web:762536b6a1f99c6ba0ddfe",
-};
-
-// Initialize Firebase
-const app = initializeApp(firebaseConfig);
-const db = getFirestore(app);
-const auth = getAuth(app);
-const googleProvider = new GoogleAuthProvider();
+import { db } from "@/lib/firebase";
+import { doc, updateDoc, getDoc } from "firebase/firestore";
+import { useAuth } from "@/contexts/AuthContext";
+import { useToast } from "@/hooks/use-toast";
 
 // Extend Window interface to include SpeechRecognition
 declare global {
@@ -66,7 +30,7 @@ declare global {
 }
 
 // Define interfaces
-interface Question {
+export interface Question {
   id: string;
   question: string;
   type: "technical" | "behavioral";
@@ -82,16 +46,6 @@ interface Question {
   };
 }
 
-interface JobSession {
-  id: string;
-  title: string;
-  company: string;
-  role: string;
-  createdAt: Date;
-  progress: number;
-  // Questions will be loaded separately from the subcollection
-}
-
 interface QuestionSectionProps {
   questions: Question[];
   onAnswerSubmit: (questionId: string, answer: string) => Promise<void>;
@@ -101,7 +55,7 @@ interface QuestionSectionProps {
   generatingQuestionId?: string;
   analyzingQuestionId?: string;
   hideFilters?: boolean;
-  storageKey?: string;
+  sessionId?: string; // Add sessionId prop
 }
 
 // Utility functions
@@ -389,67 +343,6 @@ function QuestionFilter({
   );
 }
 
-// Component for progress display
-function ProgressBar({ progress }: { progress: number }) {
-  return (
-    <div className="w-full bg-white/10 rounded-full h-2.5 mb-4">
-      <div
-        className="bg-blue-600 h-2.5 rounded-full transition-all duration-300"
-        style={{ width: `${progress}%` }}
-      ></div>
-      <div className="flex justify-between text-xs text-gray-400 mt-1">
-        <span>Progress</span>
-        <span>{progress}%</span>
-      </div>
-    </div>
-  );
-}
-
-// Component for job session selection
-function JobSessionSelector({
-  sessions,
-  currentSessionId,
-  onSelectSession,
-  onCreateNewSession,
-}: {
-  sessions: JobSession[];
-  currentSessionId: string | null;
-  onSelectSession: (sessionId: string) => void;
-  onCreateNewSession: () => void;
-}) {
-  return (
-    <div className="mb-6 p-4 bg-white/5 rounded-lg border border-white/10">
-      <h3 className="text-white text-lg font-medium mb-3">Job Sessions</h3>
-      <div className="flex flex-wrap gap-2">
-        {sessions.map((session) => (
-          <Button
-            key={session.id}
-            onClick={() => onSelectSession(session.id)}
-            variant={currentSessionId === session.id ? "default" : "outline"}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-              currentSessionId === session.id
-                ? "bg-white text-black"
-                : "bg-[#2a2a2a] text-gray-300 hover:bg-[#333] hover:text-white"
-            }`}
-          >
-            {session.company} - {session.role}
-            <Badge className="ml-2 bg-blue-500/20 text-blue-400 border-blue-500/30">
-              {session.progress}%
-            </Badge>
-          </Button>
-        ))}
-        <Button
-          onClick={onCreateNewSession}
-          variant="outline"
-          className="bg-green-500/20 text-green-400 border-green-500/30 hover:bg-green-500/30"
-        >
-          <Plus className="h-4 w-4 mr-1" /> New Session
-        </Button>
-      </div>
-    </div>
-  );
-}
-
 // Main QuestionSection component
 export function QuestionSection({
   questions,
@@ -460,27 +353,24 @@ export function QuestionSection({
   generatingQuestionId,
   analyzingQuestionId,
   hideFilters = false,
-  storageKey = "interview-questions-data",
+  sessionId,
 }: QuestionSectionProps) {
   const [userAnswers, setUserAnswers] = useState<{ [key: string]: string }>({});
   const [selectedType, setSelectedType] = useState<string | null>(null);
-  const [selectedDifficulty, setSelectedDifficulty] = useState<string | null>(
-    null
-  );
+  const [selectedDifficulty, setSelectedDifficulty] = useState<string | null>(null);
   const [isListening, setIsListening] = useState(false);
-  const [listeningQuestionId, setListeningQuestionId] = useState<string | null>(
-    null
-  );
+  const [listeningQuestionId, setListeningQuestionId] = useState<string | null>(null);
   const [speechSupported, setSpeechSupported] = useState(false);
   const [permissionGranted, setPermissionGranted] = useState(false);
-  const [analysisErrors, setAnalysisErrors] = useState<{
-    [key: string]: string;
-  }>({});
+  const [analysisErrors, setAnalysisErrors] = useState<{ [key: string]: string }>({});
   const [retryCounts, setRetryCounts] = useState<{ [key: string]: number }>({});
   const recognitionRef = useRef<any>(null);
   const interimTranscriptRef = useRef<string>("");
   const finalTranscriptRef = useRef<string>("");
   const isStoppingRef = useRef(false);
+  
+  const { currentUser } = useAuth();
+  const { toast } = useToast();
 
   // Initialize user answers from questions
   useEffect(() => {
@@ -492,6 +382,83 @@ export function QuestionSection({
     });
     setUserAnswers(initialAnswers);
   }, [questions]);
+
+  // Save user answer to Firebase
+  const saveAnswerToFirebase = async (questionId: string, answer: string) => {
+    if (!currentUser || !sessionId) return;
+
+    try {
+      const sessionRef = doc(db, "sessions", sessionId);
+      const sessionDoc = await getDoc(sessionRef);
+      
+      if (sessionDoc.exists()) {
+        const sessionData = sessionDoc.data();
+        const updatedQuestions = sessionData.questions.map((q: Question) =>
+          q.id === questionId ? { ...q, userAnswer: answer } : q
+        );
+
+        await updateDoc(sessionRef, {
+          questions: updatedQuestions,
+          lastUpdated: new Date(),
+        });
+      }
+    } catch (error) {
+      console.error("Error saving answer to Firebase:", error);
+    }
+  };
+
+  // Save feedback to Firebase
+  const saveFeedbackToFirebase = async (questionId: string, feedback: any) => {
+    if (!currentUser || !sessionId) return;
+
+    try {
+      const sessionRef = doc(db, "sessions", sessionId);
+      const sessionDoc = await getDoc(sessionRef);
+      
+      if (sessionDoc.exists()) {
+        const sessionData = sessionDoc.data();
+        const updatedQuestions = sessionData.questions.map((q: Question) =>
+          q.id === questionId ? { ...q, feedback } : q
+        );
+
+        // Calculate progress
+        const answeredCount = updatedQuestions.filter((q: Question) => q.userAnswer).length;
+        const progress = Math.round((answeredCount / updatedQuestions.length) * 100);
+
+        await updateDoc(sessionRef, {
+          questions: updatedQuestions,
+          progress,
+          lastUpdated: new Date(),
+        });
+      }
+    } catch (error) {
+      console.error("Error saving feedback to Firebase:", error);
+    }
+  };
+
+  // Save suggested answer to Firebase
+  const saveSuggestedAnswerToFirebase = async (questionId: string, suggestedAnswer: string) => {
+    if (!currentUser || !sessionId) return;
+
+    try {
+      const sessionRef = doc(db, "sessions", sessionId);
+      const sessionDoc = await getDoc(sessionRef);
+      
+      if (sessionDoc.exists()) {
+        const sessionData = sessionDoc.data();
+        const updatedQuestions = sessionData.questions.map((q: Question) =>
+          q.id === questionId ? { ...q, suggestedAnswer } : q
+        );
+
+        await updateDoc(sessionRef, {
+          questions: updatedQuestions,
+          lastUpdated: new Date(),
+        });
+      }
+    } catch (error) {
+      console.error("Error saving suggested answer to Firebase:", error);
+    }
+  };
 
   // Initialize speech recognition
   useEffect(() => {
@@ -573,8 +540,13 @@ export function QuestionSection({
     };
   }, [listeningQuestionId, userAnswers]);
 
-  const handleAnswerChange = (questionId: string, answer: string) => {
+  const handleAnswerChange = async (questionId: string, answer: string) => {
     setUserAnswers((prev) => ({ ...prev, [questionId]: answer }));
+    
+    // Save to Firebase immediately when user types
+    if (answer.trim()) {
+      await saveAnswerToFirebase(questionId, answer);
+    }
   };
 
   const handleAnswerSubmit = async (questionId: string, answer: string) => {
@@ -586,6 +558,7 @@ export function QuestionSection({
         return newErrors;
       });
 
+      // Call the parent's onAnswerSubmit which will handle the AI analysis
       await onAnswerSubmit(questionId, answer);
 
       // Reset retry count on success
@@ -730,6 +703,7 @@ export function QuestionSection({
     acc[q.difficulty] = (acc[q.difficulty] || 0) + 1;
     return acc;
   }, {} as Record<string, number>);
+  
   // Filter questions based on selections
   const filteredQuestions = questions.filter((q) => {
     const typeMatch = selectedType ? q.type === selectedType : true;
@@ -1069,435 +1043,6 @@ export function QuestionSection({
               Try adjusting your filters to see more results
             </p>
           </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// Main Interview Dashboard Component
-export default function InterviewDashboard() {
-  const [currentUser, setCurrentUser] = useState<any>(null);
-  const [jobSessions, setJobSessions] = useState<JobSession[]>([]);
-  const [currentSession, setCurrentSession] = useState<JobSession | null>(null);
-  const [currentQuestions, setCurrentQuestions] = useState<Question[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [generatingQuestionId, setGeneratingQuestionId] = useState<
-    string | undefined
-  >();
-  const [analyzingQuestionId, setAnalyzingQuestionId] = useState<
-    string | undefined
-  >();
-
-  // Initialize auth state listener
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      setCurrentUser(user);
-      if (user) {
-        loadUserSessions(user.uid);
-      } else {
-        setIsLoading(false);
-      }
-    });
-    return () => unsubscribe();
-  }, []);
-
-  // Load user's job sessions from Firestore
-  const loadUserSessions = async (userId: string) => {
-    try {
-      const sessionsRef = collection(db, `users/${userId}/sessions`);
-      const q = query(sessionsRef, orderBy("createdAt", "desc"));
-      const querySnapshot = await getDocs(q);
-
-      const sessions: JobSession[] = [];
-      for (const doc of querySnapshot.docs) {
-        const data = doc.data();
-        sessions.push({
-          id: doc.id,
-          title: data.title,
-          company: data.company,
-          role: data.role,
-          createdAt: data.createdAt.toDate(),
-          progress: data.progress || 0,
-        });
-      }
-
-      setJobSessions(sessions);
-
-      // Set the first session as current if none is selected
-      if (sessions.length > 0 && !currentSession) {
-        await selectSession(sessions[0].id);
-      }
-
-      setIsLoading(false);
-    } catch (error) {
-      console.error("Error loading sessions:", error);
-      setIsLoading(false);
-    }
-  };
-
-  // Load questions for a specific session
-  const loadSessionQuestions = async (sessionId: string) => {
-    if (!currentUser) return [];
-
-    try {
-      const questionsRef = collection(
-        db,
-        `users/${currentUser.uid}/sessions/${sessionId}/questions`
-      );
-      const q = query(questionsRef, orderBy("id"));
-      const querySnapshot = await getDocs(q);
-
-      const questions: Question[] = [];
-      querySnapshot.forEach((doc) => {
-        questions.push(doc.data() as Question);
-      });
-
-      return questions;
-    } catch (error) {
-      console.error("Error loading questions:", error);
-      return [];
-    }
-  };
-
-  // Select a session and load its questions
-  const selectSession = async (sessionId: string) => {
-    const session = jobSessions.find((s) => s.id === sessionId);
-    if (session) {
-      setCurrentSession(session);
-      const questions = await loadSessionQuestions(sessionId);
-      setCurrentQuestions(questions);
-    }
-  };
-
-  // Sign in with Google
-  const signInWithGoogle = async () => {
-    try {
-      const result = await signInWithPopup(auth, googleProvider);
-      setCurrentUser(result.user);
-    } catch (error) {
-      console.error("Error signing in with Google:", error);
-    }
-  };
-
-  // Sign out
-  const handleSignOut = async () => {
-    try {
-      await signOut(auth);
-      setCurrentUser(null);
-      setJobSessions([]);
-      setCurrentSession(null);
-      setCurrentQuestions([]);
-    } catch (error) {
-      console.error("Error signing out:", error);
-    }
-  };
-
-  // Create a new job session
-  const createNewSession = async () => {
-    if (!currentUser) return;
-
-    try {
-      // Default questions for a new session
-      const defaultQuestions: Question[] = [
-        {
-          id: "1",
-          question:
-            "What is the difference between `==` and `.Equals()` in C#?",
-          type: "technical",
-          difficulty: "Easy",
-          category: "C#",
-        },
-        {
-          id: "2",
-          question: "Explain the concept of inheritance in OOP.",
-          type: "technical",
-          difficulty: "Easy",
-          category: "OOP",
-        },
-        {
-          id: "3",
-          question:
-            "What is the time complexity of searching for an element in a sorted array using binary search?",
-          type: "technical",
-          difficulty: "Easy",
-          category: "DSA",
-        },
-        {
-          id: "4",
-          question:
-            "What is the difference between `throw` and `throw ex` in C# exception handling?",
-          type: "technical",
-          difficulty: "Easy",
-          category: "C#",
-        },
-        {
-          id: "5",
-          question: "What is boxing and unboxing in C#?",
-          type: "technical",
-          difficulty: "Easy",
-          category: "C#",
-        },
-      ];
-
-      // Create session document
-      const sessionRef = doc(
-        collection(db, `users/${currentUser.uid}/sessions`)
-      );
-      const newSession: JobSession = {
-        id: sessionRef.id,
-        title: `Session ${jobSessions.length + 1}`,
-        company: "New Company",
-        role: "New Role",
-        createdAt: new Date(),
-        progress: 0,
-      };
-
-      await setDoc(sessionRef, {
-        title: newSession.title,
-        company: newSession.company,
-        role: newSession.role,
-        createdAt: serverTimestamp(),
-        progress: newSession.progress,
-      });
-
-      // Add questions to the subcollection
-      for (const question of defaultQuestions) {
-        const questionRef = doc(
-          collection(
-            db,
-            `users/${currentUser.uid}/sessions/${sessionRef.id}/questions`
-          )
-        );
-        await setDoc(questionRef, {
-          ...question,
-          id: questionRef.id, // Use Firestore-generated ID
-        });
-      }
-
-      // Update local state
-      setJobSessions([newSession, ...jobSessions]);
-      setCurrentSession(newSession);
-      setCurrentQuestions(defaultQuestions);
-    } catch (error) {
-      console.error("Error creating session:", error);
-    }
-  };
-
-  // Update a question in the current session
-  const updateQuestion = async (
-    questionId: string,
-    updates: Partial<Question>
-  ) => {
-    if (!currentSession || !currentUser) return;
-
-    try {
-      // Update Firestore
-      const questionRef = doc(
-        db,
-        `users/${currentUser.uid}/sessions/${currentSession.id}/questions/${questionId}`
-      );
-      await updateDoc(questionRef, updates);
-
-      // Update local state
-      setCurrentQuestions((prev) =>
-        prev.map((q) => (q.id === questionId ? { ...q, ...updates } : q))
-      );
-
-      // Calculate new progress
-      const updatedQuestions = currentQuestions.map((q) =>
-        q.id === questionId ? { ...q, ...updates } : q
-      );
-      const answeredCount = updatedQuestions.filter((q) => q.userAnswer).length;
-      const newProgress = Math.round(
-        (answeredCount / updatedQuestions.length) * 100
-      );
-
-      // Update session progress
-      const sessionRef = doc(
-        db,
-        `users/${currentUser.uid}/sessions`,
-        currentSession.id
-      );
-      await updateDoc(sessionRef, {
-        progress: newProgress,
-      });
-
-      // Update jobSessions array with the updated progress
-      setJobSessions(
-        jobSessions.map((session) =>
-          session.id === currentSession.id
-            ? { ...session, progress: newProgress }
-            : session
-        )
-      );
-    } catch (error) {
-      console.error("Error updating question:", error);
-    }
-  };
-
-  // Handle answer submission
-  const handleAnswerSubmit = async (questionId: string, answer: string) => {
-    if (!currentSession) return;
-
-    setIsAnalyzing(true);
-    setAnalyzingQuestionId(questionId);
-
-    // Simulate analysis (in a real app, this would be an API call)
-    setTimeout(async () => {
-      const feedback = {
-        score: Math.floor(Math.random() * 5) + 6, // Random score between 6-10
-        strengths: ["Good structure", "Relevant examples"],
-        improvements: ["Could provide more details", "Add code examples"],
-        improvedAnswer:
-          "This is an improved answer suggestion based on your response.",
-      };
-
-      await updateQuestion(questionId, { userAnswer: answer, feedback });
-
-      setIsAnalyzing(false);
-      setAnalyzingQuestionId(undefined);
-    }, 1500);
-  };
-
-  // Handle AI answer generation
-  const handleGenerateAnswer = async (questionId: string) => {
-    if (!currentSession) return;
-
-    setIsGenerating(true);
-    setGeneratingQuestionId(questionId);
-
-    // Simulate AI generation (in a real app, this would be an API call)
-    setTimeout(async () => {
-      const suggestedAnswer =
-        "This is a sample AI-generated answer that demonstrates how to respond to this interview question effectively. It includes relevant details and examples.";
-
-      await updateQuestion(questionId, { suggestedAnswer });
-
-      setIsGenerating(false);
-      setGeneratingQuestionId(undefined);
-    }, 2000);
-  };
-
-  // Render loading state
-  if (isLoading) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-[#0f0f0f] to-black flex items-center justify-center">
-        <div className="text-white text-lg">Loading...</div>
-      </div>
-    );
-  }
-
-  // Render when no user is logged in
-  if (!currentUser) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-[#0f0f0f] to-black flex items-center justify-center p-4">
-        <Card className="w-full max-w-md bg-[#1a1a1a] border-white/10 text-white">
-          <CardHeader>
-            <CardTitle className="text-center">
-              Interview Preparation Dashboard
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <p className="text-gray-400 text-center">
-              Sign in to access your interview preparation sessions
-            </p>
-            <Button
-              onClick={signInWithGoogle}
-              className="w-full bg-white text-black hover:bg-gray-200"
-            >
-              Sign in with Google
-            </Button>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
-
-  // Render when no sessions exist
-  if (jobSessions.length === 0) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-[#0f0f0f] to-black p-8">
-        <div className="max-w-4xl mx-auto">
-          <div className="flex justify-between items-center mb-8">
-            <h1 className="text-3xl font-bold text-white">
-              Interview Preparation Dashboard
-            </h1>
-            <Button
-              onClick={handleSignOut}
-              variant="outline"
-              className="border-white/20 text-white"
-            >
-              <LogOut className="h-4 w-4 mr-2" /> Sign Out
-            </Button>
-          </div>
-
-          <div className="text-center py-12">
-            <BarChart3 className="mx-auto h-12 w-12 text-gray-400 mb-4" />
-            <h3 className="text-lg font-medium text-white mb-2">
-              No interview sessions yet
-            </h3>
-            <p className="text-gray-400 mb-4">
-              Create your first job interview session to get started
-            </p>
-            <Button
-              onClick={createNewSession}
-              className="bg-blue-600 hover:bg-blue-700"
-            >
-              Create New Session
-            </Button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // Render main dashboard with current session
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-[#0f0f0f] to-black p-4 md:p-8">
-      <div className="max-w-6xl mx-auto">
-        <div className="flex justify-between items-center mb-6">
-          <h1 className="text-3xl font-bold text-white">
-            Interview Preparation Dashboard
-          </h1>
-          <Button
-            onClick={handleSignOut}
-            variant="outline"
-            className="border-white/20 text-white"
-          >
-            <LogOut className="h-4 w-4 mr-2" /> Sign Out
-          </Button>
-        </div>
-
-        <JobSessionSelector
-          sessions={jobSessions}
-          currentSessionId={currentSession?.id || null}
-          onSelectSession={selectSession}
-          onCreateNewSession={createNewSession}
-        />
-
-        {currentSession && (
-          <>
-            <div className="mb-6">
-              <h2 className="text-xl font-semibold text-white mb-2">
-                {currentSession.company} - {currentSession.role}
-              </h2>
-              <ProgressBar progress={currentSession.progress} />
-            </div>
-
-            <QuestionSection
-              questions={currentQuestions}
-              onAnswerSubmit={handleAnswerSubmit}
-              onGenerateAnswer={handleGenerateAnswer}
-              isGenerating={isGenerating}
-              isAnalyzing={isAnalyzing}
-              generatingQuestionId={generatingQuestionId}
-              analyzingQuestionId={analyzingQuestionId}
-              storageKey={`session-${currentSession.id}`}
-            />
-          </>
         )}
       </div>
     </div>

@@ -19,6 +19,7 @@ import { doc, getDoc } from "firebase/firestore";
 import { generateAnswer, analyzeAnswer } from "@/lib/openRouter";
 import { QuestionSection } from "./QuestionSection";
 import { CodingSection } from "./CodingSection";
+import { doc, updateDoc, getDoc } from "firebase/firestore";
 
 interface SessionData {
   id: string;
@@ -119,13 +120,29 @@ export function SessionView() {
         sessionData.jobTitle
       );
 
+      // Update local state
+      const updatedQuestions = sessionData.questions.map((q) =>
+        q.id === questionId ? { ...q, userAnswer: answer, feedback } : q
+      );
+
+      // Calculate progress
+      const answeredCount = updatedQuestions.filter((q) => q.userAnswer).length;
+      const progress = Math.round((answeredCount / updatedQuestions.length) * 100);
+
+      // Update Firebase
+      const sessionRef = doc(db, "sessions", sessionId!);
+      await updateDoc(sessionRef, {
+        questions: updatedQuestions,
+        progress,
+        lastUpdated: new Date(),
+      });
+
+      // Update local state
       setSessionData((prev) =>
         prev
           ? {
               ...prev,
-              questions: prev.questions.map((q) =>
-                q.id === questionId ? { ...q, userAnswer: answer, feedback } : q
-              ),
+              questions: updatedQuestions,
             }
           : null
       );
@@ -163,13 +180,24 @@ export function SessionView() {
         question.type
       );
 
+      // Update local state
+      const updatedQuestions = sessionData.questions.map((q) =>
+        q.id === questionId ? { ...q, suggestedAnswer } : q
+      );
+
+      // Update Firebase
+      const sessionRef = doc(db, "sessions", sessionId!);
+      await updateDoc(sessionRef, {
+        questions: updatedQuestions,
+        lastUpdated: new Date(),
+      });
+
+      // Update local state
       setSessionData((prev) =>
         prev
           ? {
               ...prev,
-              questions: prev.questions.map((q) =>
-                q.id === questionId ? { ...q, suggestedAnswer } : q
-              ),
+              questions: updatedQuestions,
             }
           : null
       );
@@ -541,6 +569,7 @@ export function SessionView() {
                 isAnalyzing={isAnalyzing}
                 generatingQuestionId={generatingQuestionId}
                 analyzingQuestionId={analyzingQuestionId}
+                sessionId={sessionId}
               />
             </motion.div>
           </TabsContent>
