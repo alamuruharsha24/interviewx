@@ -1,5 +1,22 @@
 // OpenRouter API integration for DeepSeek R1
-const API_KEYS = [];
+const API_KEYS = [
+  "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",
+  "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",
+  "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",
+  "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",
+  "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",
+  "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",
+  "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",
+  "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",
+  "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",
+  "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",
+  "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",
+  "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",
+  "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",
+  "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",
+  "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",
+];
+
 
 // Smart key rotation with randomization and load balancing
 let keyUsageCount = new Array(API_KEYS.length).fill(0);
