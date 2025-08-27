@@ -19,7 +19,11 @@ import { doc, getDoc } from "firebase/firestore";
 import { generateAnswer, analyzeAnswer } from "@/lib/openRouter";
 import { QuestionSection } from "./QuestionSection";
 import { CodingSection } from "./CodingSection";
-import { doc, updateDoc, getDoc } from "firebase/firestore";
+import { 
+  updateQuestionInSession, 
+  saveFeedback, 
+  saveSuggestedAnswer 
+} from "@/lib/firebase-utils";
 
 interface SessionData {
   id: string;
@@ -114,35 +118,25 @@ export function SessionView() {
       const question = sessionData.questions.find((q) => q.id === questionId);
       if (!question) return;
 
+      // Save user answer first
+      await updateQuestionInSession(sessionId!, questionId, { userAnswer: answer });
       const feedback = await analyzeAnswer(
         question.question,
         answer,
         sessionData.jobTitle
       );
 
-      // Update local state
-      const updatedQuestions = sessionData.questions.map((q) =>
-        q.id === questionId ? { ...q, userAnswer: answer, feedback } : q
-      );
-
-      // Calculate progress
-      const answeredCount = updatedQuestions.filter((q) => q.userAnswer).length;
-      const progress = Math.round((answeredCount / updatedQuestions.length) * 100);
-
-      // Update Firebase
-      const sessionRef = doc(db, "sessions", sessionId!);
-      await updateDoc(sessionRef, {
-        questions: updatedQuestions,
-        progress,
-        lastUpdated: new Date(),
-      });
+      // Save feedback to Firebase
+      await saveFeedback(sessionId!, questionId, feedback);
 
       // Update local state
       setSessionData((prev) =>
         prev
           ? {
               ...prev,
-              questions: updatedQuestions,
+              questions: prev.questions.map((q) =>
+                q.id === questionId ? { ...q, userAnswer: answer, feedback } : q
+              ),
             }
           : null
       );
@@ -180,24 +174,17 @@ export function SessionView() {
         question.type
       );
 
-      // Update local state
-      const updatedQuestions = sessionData.questions.map((q) =>
-        q.id === questionId ? { ...q, suggestedAnswer } : q
-      );
-
-      // Update Firebase
-      const sessionRef = doc(db, "sessions", sessionId!);
-      await updateDoc(sessionRef, {
-        questions: updatedQuestions,
-        lastUpdated: new Date(),
-      });
+      // Save suggested answer to Firebase
+      await saveSuggestedAnswer(sessionId!, questionId, suggestedAnswer);
 
       // Update local state
       setSessionData((prev) =>
         prev
           ? {
               ...prev,
-              questions: updatedQuestions,
+              questions: prev.questions.map((q) =>
+                q.id === questionId ? { ...q, suggestedAnswer } : q
+              ),
             }
           : null
       );

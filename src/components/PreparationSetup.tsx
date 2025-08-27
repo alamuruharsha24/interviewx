@@ -371,7 +371,10 @@ export function PreparationSetup() {
         codingQuestions,
         questionCount: questions.length,
         codingCount: codingQuestions.length,
+        progress: 0,
+        answeredCount: 0,
         createdAt: serverTimestamp(),
+        lastUpdated: serverTimestamp(),
       };
 
       const docRef = await addDoc(collection(db, "sessions"), sessionData);
