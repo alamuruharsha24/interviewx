@@ -16,10 +16,14 @@ import {
   Check,
   RefreshCw,
 } from "lucide-react";
-import { db } from "@/lib/firebase";
-import { doc, updateDoc, getDoc, setDoc } from "firebase/firestore";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
+import { 
+  saveUserAnswer, 
+  saveFeedback, 
+  saveSuggestedAnswer,
+  updateSessionProgress 
+} from "@/lib/firebase-utils";
 
 // Extend Window interface to include SpeechRecognition
 declare global {
@@ -55,7 +59,8 @@ interface QuestionSectionProps {
   generatingQuestionId?: string;
   analyzingQuestionId?: string;
   hideFilters?: boolean;
-  sessionId: string; // Make sessionId required
+  sessionId: string;
+  onQuestionsUpdate?: (questions: Question[]) => void;
 }
 
 // Utility functions
@@ -354,6 +359,7 @@ export function QuestionSection({
   analyzingQuestionId,
   hideFilters = false,
   sessionId,
+  onQuestionsUpdate,
 }: QuestionSectionProps) {
   const [userAnswers, setUserAnswers] = useState<{ [key: string]: string }>({});
   const [selectedType, setSelectedType] = useState<string | null>(null);
@@ -364,15 +370,17 @@ export function QuestionSection({
   const [permissionGranted, setPermissionGranted] = useState(false);
   const [analysisErrors, setAnalysisErrors] = useState<{ [key: string]: string }>({});
   const [retryCounts, setRetryCounts] = useState<{ [key: string]: number }>({});
+  const [savingAnswers, setSavingAnswers] = useState<{ [key: string]: boolean }>({});
   const recognitionRef = useRef<any>(null);
   const interimTranscriptRef = useRef<string>("");
   const finalTranscriptRef = useRef<string>("");
   const isStoppingRef = useRef(false);
+  const saveTimeoutRef = useRef<{ [key: string]: NodeJS.Timeout }>({});
   
   const { currentUser } = useAuth();
   const { toast } = useToast();
 
-  // Initialize user answers from questions
+  // Initialize user answers from questions and sync with Firebase
   useEffect(() => {
     const initialAnswers: { [key: string]: string } = {};
     questions.forEach((q) => {
@@ -383,127 +391,42 @@ export function QuestionSection({
     setUserAnswers(initialAnswers);
   }, [questions]);
 
-  // Save user answer to Firebase with proper error handling
-  const saveAnswerToFirebase = async (questionId: string, answer: string) => {
-    if (!currentUser || !sessionId) {
-      console.error("Missing user or session ID for saving answer");
-      return;
+  // Debounced save function for user answers
+  const debouncedSaveAnswer = async (questionId: string, answer: string) => {
+    if (!sessionId || !currentUser) return;
+
+    // Clear existing timeout for this question
+    if (saveTimeoutRef.current[questionId]) {
+      clearTimeout(saveTimeoutRef.current[questionId]);
     }
 
-    try {
-      const sessionRef = doc(db, "sessions", sessionId);
-      const sessionDoc = await getDoc(sessionRef);
-      
-      if (!sessionDoc.exists()) {
-        console.error("Session document does not exist:", sessionId);
-        return;
+    // Set saving state
+    setSavingAnswers(prev => ({ ...prev, [questionId]: true }));
+
+    // Set new timeout
+    saveTimeoutRef.current[questionId] = setTimeout(async () => {
+      try {
+        await saveUserAnswer(sessionId, questionId, answer);
+        console.log(`Auto-saved answer for question ${questionId}`);
+        
+        // Update progress after saving
+        await updateSessionProgress(sessionId);
+        
+        // Clear saving state
+        setSavingAnswers(prev => {
+          const newState = { ...prev };
+          delete newState[questionId];
+          return newState;
+        });
+      } catch (error) {
+        console.error("Error auto-saving answer:", error);
+        setSavingAnswers(prev => {
+          const newState = { ...prev };
+          delete newState[questionId];
+          return newState;
+        });
       }
-
-      const sessionData = sessionDoc.data();
-      const updatedQuestions = sessionData.questions.map((q: Question) =>
-        q.id === questionId ? { ...q, userAnswer: answer } : q
-      );
-
-      // Calculate progress
-      const answeredCount = updatedQuestions.filter((q: Question) => q.userAnswer?.trim()).length;
-      const progressPercentage = Math.round((answeredCount / updatedQuestions.length) * 100);
-
-      await updateDoc(sessionRef, {
-        questions: updatedQuestions,
-        progress: progressPercentage,
-        answeredCount,
-        lastUpdated: new Date(),
-      });
-
-      console.log(`Saved answer for question ${questionId} in session ${sessionId}`);
-    } catch (error) {
-      console.error("Error saving answer to Firebase:", error);
-      toast({
-        title: "Save Error",
-        description: "Failed to save your answer. Please try again.",
-        variant: "destructive",
-      });
-    }
-  };
-
-  // Save feedback to Firebase with proper error handling
-  const saveFeedbackToFirebase = async (questionId: string, feedback: any) => {
-    if (!currentUser || !sessionId) {
-      console.error("Missing user or session ID for saving feedback");
-      return;
-    }
-
-    try {
-      const sessionRef = doc(db, "sessions", sessionId);
-      const sessionDoc = await getDoc(sessionRef);
-      
-      if (!sessionDoc.exists()) {
-        console.error("Session document does not exist:", sessionId);
-        return;
-      }
-
-      const sessionData = sessionDoc.data();
-      const updatedQuestions = sessionData.questions.map((q: Question) =>
-        q.id === questionId ? { ...q, feedback } : q
-      );
-
-      // Calculate progress
-      const answeredCount = updatedQuestions.filter((q: Question) => q.userAnswer?.trim()).length;
-      const progressPercentage = Math.round((answeredCount / updatedQuestions.length) * 100);
-
-      await updateDoc(sessionRef, {
-        questions: updatedQuestions,
-        progress: progressPercentage,
-        answeredCount,
-        lastUpdated: new Date(),
-      });
-
-      console.log(`Saved feedback for question ${questionId} in session ${sessionId}`);
-    } catch (error) {
-      console.error("Error saving feedback to Firebase:", error);
-      toast({
-        title: "Save Error",
-        description: "Failed to save feedback. Please try again.",
-        variant: "destructive",
-      });
-    }
-  };
-
-  // Save suggested answer to Firebase with proper error handling
-  const saveSuggestedAnswerToFirebase = async (questionId: string, suggestedAnswer: string) => {
-    if (!currentUser || !sessionId) {
-      console.error("Missing user or session ID for saving suggested answer");
-      return;
-    }
-
-    try {
-      const sessionRef = doc(db, "sessions", sessionId);
-      const sessionDoc = await getDoc(sessionRef);
-      
-      if (!sessionDoc.exists()) {
-        console.error("Session document does not exist:", sessionId);
-        return;
-      }
-
-      const sessionData = sessionDoc.data();
-      const updatedQuestions = sessionData.questions.map((q: Question) =>
-        q.id === questionId ? { ...q, suggestedAnswer } : q
-      );
-
-      await updateDoc(sessionRef, {
-        questions: updatedQuestions,
-        lastUpdated: new Date(),
-      });
-
-      console.log(`Saved suggested answer for question ${questionId} in session ${sessionId}`);
-    } catch (error) {
-      console.error("Error saving suggested answer to Firebase:", error);
-      toast({
-        title: "Save Error",
-        description: "Failed to save suggested answer. Please try again.",
-        variant: "destructive",
-      });
-    }
+    }, 2000); // Save after 2 seconds of no typing
   };
 
   // Initialize speech recognition
@@ -561,6 +484,9 @@ export function QuestionSection({
             ...prev,
             [listeningQuestionId]: newText,
           }));
+          
+          // Auto-save the transcribed text
+          debouncedSaveAnswer(listeningQuestionId, newText);
         }
       };
       recognition.onerror = (event: any) => {
@@ -583,19 +509,18 @@ export function QuestionSection({
       if (recognitionRef.current && isListening) {
         recognitionRef.current.stop();
       }
+      // Clear all timeouts on unmount
+      Object.values(saveTimeoutRef.current).forEach(timeout => {
+        if (timeout) clearTimeout(timeout);
+      });
     };
-  }, [listeningQuestionId, userAnswers]);
+  }, [listeningQuestionId, userAnswers, sessionId, currentUser]);
 
-  const handleAnswerChange = async (questionId: string, answer: string) => {
+  const handleAnswerChange = (questionId: string, answer: string) => {
     setUserAnswers((prev) => ({ ...prev, [questionId]: answer }));
     
-    // Debounced save to Firebase to avoid too many writes
-    const timeoutId = setTimeout(async () => {
-      await saveAnswerToFirebase(questionId, answer);
-    }, 1000); // Save after 1 second of no typing
-
-    // Clear previous timeout
-    return () => clearTimeout(timeoutId);
+    // Auto-save with debouncing
+    debouncedSaveAnswer(questionId, answer);
   };
 
   const handleAnswerSubmit = async (questionId: string, answer: string) => {
@@ -603,6 +528,15 @@ export function QuestionSection({
       toast({
         title: "Empty Answer",
         description: "Please provide an answer before submitting.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (!sessionId || !currentUser) {
+      toast({
+        title: "Session Error",
+        description: "Session not found. Please try again.",
         variant: "destructive",
       });
       return;
@@ -616,8 +550,8 @@ export function QuestionSection({
         return newErrors;
       });
 
-      // Save user answer first
-      await saveAnswerToFirebase(questionId, answer);
+      // Save user answer immediately
+      await saveUserAnswer(sessionId, questionId, answer);
 
       // Call the parent's onAnswerSubmit which will handle the AI analysis
       await onAnswerSubmit(questionId, answer);
@@ -628,6 +562,10 @@ export function QuestionSection({
         delete newCounts[questionId];
         return newCounts;
       });
+
+      // Update progress after successful submission
+      await updateSessionProgress(sessionId);
+
     } catch (error) {
       console.error("Error submitting answer:", error);
       // Increment retry count
@@ -657,6 +595,15 @@ export function QuestionSection({
   };
 
   const handleGenerateAnswer = async (questionId: string) => {
+    if (!sessionId || !currentUser) {
+      toast({
+        title: "Session Error",
+        description: "Session not found. Please try again.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     try {
       // Clear any previous error
       setAnalysisErrors((prev) => {
@@ -784,6 +731,8 @@ export function QuestionSection({
   const renderQuestion = (question: Question) => {
     const currentRetryCount = retryCounts[question.id] || 0;
     const isRetrying = currentRetryCount > 0 && currentRetryCount < 3;
+    const isSaving = savingAnswers[question.id] || false;
+    
     return (
       <Card
         key={question.id}
@@ -795,7 +744,7 @@ export function QuestionSection({
               <CardTitle className="text-lg leading-relaxed text-white">
                 {question.question}
               </CardTitle>
-              <div className="flex items-center gap-2 mt-2">
+              <div className="flex items-center gap-2 mt-2 flex-wrap">
                 <Badge
                   className={`${
                     question.difficulty === "Easy"
@@ -819,6 +768,16 @@ export function QuestionSection({
                 >
                   {question.type === "technical" ? "Technical" : "Behavioral"}
                 </Badge>
+                {isSaving && (
+                  <Badge className="bg-yellow-500/20 text-yellow-400 border-yellow-500/30">
+                    Saving...
+                  </Badge>
+                )}
+                {question.userAnswer && !isSaving && (
+                  <Badge className="bg-green-500/20 text-green-400 border-green-500/30">
+                    Answered
+                  </Badge>
+                )}
               </div>
             </div>
           </div>
@@ -1031,7 +990,8 @@ export function QuestionSection({
                   !userAnswers[question.id]?.trim() ||
                   analyzingQuestionId === question.id ||
                   (isListening && listeningQuestionId === question.id) ||
-                  isRetrying
+                  isRetrying ||
+                  isSaving
                 }
                 variant="default"
                 size="sm"
